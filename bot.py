@@ -13,7 +13,7 @@ TOKEN = os.getenv("BOT_TOKEN")
 SCRIPT_URL = os.getenv("GOOGLE_APPS_SCRIPT_URL")
 
 # Hanya ID berikut yang bisa mengakses bot
-AUTHORIZED_IDS = [5425205882, 2092596833, -2757263947]
+AUTHORIZED_IDS = [5425205882, 2092596833, -1002757263947]
 
 # Link publikasi sheet Nama Parfum (ubah sesuai publish-to-web link)
 NAMA_PARFUM_SHEET_URL = "https://docs.google.com/spreadsheets/d/1P4BO2jswz3xcngKspWrJeEm70MqalEN7P_BUMBSH7Ns/gviz/tq?tqx=out:json&gid=0"
