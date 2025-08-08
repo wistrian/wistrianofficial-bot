@@ -31,33 +31,16 @@ def is_authorized(chat_id):
 
 # Fungsi ambil nama parfum & kategorinya
 def ambil_nama_parfum():
-    try:
-        res = requests.get(NAMA_PARFUM_SHEET_URL)
-        text = res.text.replace("/*O_o*/", "").split("(", 1)[1].rsplit(")", 1)[0]
-        json_data = json.loads(text)
-        rows = json_data['table']['rows']
-        parfum_map = {}
-        for row in rows[1:]:
-            if row and len(row) > 2:
-                nama = row['c'][1]['v'] if row['c'][1] else ""
-                kategori = row['c'][2]['v'] if row['c'][2] else ""
-                if nama:
-                    parfum_map[nama] = kategori
-        return parfum_map
-    except:
         return {}
 
 # ===== Handlers =====
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    if not is_authorized(chat_id):
-        await update.message.reply_text("❌ Maaf, Anda tidak memiliki izin untuk menggunakan bot ini.")
-        return ConversationHandler.END
-
-    keyboard = [['Penjualan'], ['Pembelian']]
+    keyboard = [['🛒 Penjualan'], ['📥 Pembelian']]
     await update.message.reply_text(
-        "Halo! Mau mencatat apa hari ini?",
+        "👋 Halo, selamat datang di Wistrian Official Bot.\n\n"
+        "Bot ini digunakan untuk pencatatan pembelian & penjualan parfum secara pribadi.\n\n"
+        "Silakan pilih mode yang ingin digunakan:",
         reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
     )
     return CHOOSING
@@ -82,19 +65,19 @@ async def input_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data['nama'] = msg
         data['tanggal'] = datetime.now().strftime("%d-%m-%Y")
         data['step'] = 'no_hp'
-        await update.message.reply_text("Nomor HP (opsional):")
+        await update.message.reply_text("📱 Nomor HP (opsional):")
         return INPUT_DATA
 
     if step == 'no_hp':
         data['no_hp'] = msg
         data['step'] = 'alamat'
-        await update.message.reply_text("Alamat (opsional):")
+        await update.message.reply_text("📍 Alamat (opsional):")
         return INPUT_DATA
 
     if step == 'alamat':
         data['alamat'] = msg
         data['step'] = 'nama_barang'
-        await update.message.reply_text("Tulis atau pilih nama barang (parfum):")
+        await update.message.reply_text("🧴 Tulis atau pilih nama barang (parfum):")
         return INPUT_DATA
 
     if step == 'nama_barang':
@@ -105,45 +88,45 @@ async def input_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             if mode == "Pembelian":
                 data['step'] = 'kategori_manual'
-                await update.message.reply_text("Kategori belum tersedia. Masukkan kategori (Botol / Campuran / Bibit):")
+                await update.message.reply_text("❗ Kategori belum tersedia. Masukkan kategori (Botol / Campuran / Bibit):")
                 return INPUT_DATA
         if mode == "Penjualan":
             data['step'] = 'varian'
-            await update.message.reply_text("Pilih varian:", reply_markup=ReplyKeyboardMarkup([ukuran_botol], one_time_keyboard=True))
+            await update.message.reply_text("🏷️ Pilih varian:", reply_markup=ReplyKeyboardMarkup([ukuran_botol], one_time_keyboard=True))
         else:
             if data.get('kategori') == "Botol":
                 data['step'] = 'varian'
-                await update.message.reply_text("Pilih ukuran botol:", reply_markup=ReplyKeyboardMarkup([ukuran_botol], one_time_keyboard=True))
+                await update.message.reply_text("📏 Pilih ukuran botol:", reply_markup=ReplyKeyboardMarkup([ukuran_botol], one_time_keyboard=True))
             elif data.get('kategori') == "Campuran":
                 data['step'] = 'varian'
-                await update.message.reply_text("Pilih jenis campuran:", reply_markup=ReplyKeyboardMarkup([jenis_campuran], one_time_keyboard=True))
+                await update.message.reply_text("⚗️ Pilih jenis campuran:", reply_markup=ReplyKeyboardMarkup([jenis_campuran], one_time_keyboard=True))
             else:
                 data['step'] = 'varian'
-                await update.message.reply_text("Masukkan varian:")
+                await update.message.reply_text("💡 Masukkan varian:")
         return INPUT_DATA
 
     if step == 'kategori_manual':
         data['kategori'] = msg
         if msg == "Botol":
-            await update.message.reply_text("Pilih ukuran botol:", reply_markup=ReplyKeyboardMarkup([ukuran_botol], one_time_keyboard=True))
+            await update.message.reply_text("📏 Pilih ukuran botol:", reply_markup=ReplyKeyboardMarkup([ukuran_botol], one_time_keyboard=True))
         elif msg == "Campuran":
-            await update.message.reply_text("Pilih jenis campuran:", reply_markup=ReplyKeyboardMarkup([jenis_campuran], one_time_keyboard=True))
+            await update.message.reply_text("⚗️ Pilih jenis campuran:", reply_markup=ReplyKeyboardMarkup([jenis_campuran], one_time_keyboard=True))
         else:
-            await update.message.reply_text("Masukkan varian:")
+            await update.message.reply_text("💡 Masukkan varian:")
         data['step'] = 'varian'
         return INPUT_DATA
 
     if step == 'varian':
         data['varian'] = msg
         data['step'] = 'qty'
-        await update.message.reply_text("Jumlah (Qty):")
+        await update.message.reply_text("🔢 Jumlah (Qty):")
         return INPUT_DATA
 
     if step == 'qty':
         try:
             data['qty'] = int(msg)
             data['step'] = 'harga_total'
-            await update.message.reply_text("Harga total (contoh: Rp 100000):")
+            await update.message.reply_text("💰 Harga total (contoh: Rp 100000):")
         except:
             await update.message.reply_text("❗ Masukkan angka untuk Qty.")
         return INPUT_DATA
@@ -158,7 +141,7 @@ async def input_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data['harga_satuan'] = "Rp -"
         if mode == "Pembelian":
             data['step'] = 'link'
-            await update.message.reply_text("Masukkan link pembelian (opsional):")
+            await update.message.reply_text("🔗 Masukkan link pembelian (opsional):")
             return INPUT_DATA
         else:
             return await simpan_data(update, context)
