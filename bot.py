@@ -64,7 +64,8 @@ def _parse_block_to_dict(text: str) -> dict:
     }
     d = {}
     for line in text.splitlines():
-        if ":" not in line: continue
+        if ":" not in line: 
+            continue
         k, v = line.split(":", 1)
         key = k.strip().lower()
         val = v.strip()
@@ -77,27 +78,32 @@ def _parse_block_to_dict(text: str) -> dict:
         d["nama_barang"] = d["nama_parfum"]
     return d
 
-def ambil_data_parfum() -> list:
-    try:
-        raw = requests.get(NAMA_PARFUM_SHEET_URL, timeout=10).text
-        data = json.loads(raw[47:-2])
-        names = []
-        for row in data["table"]["rows"]:
-            nama = row["c"][0]["v"] if row["c"][0] else ""
-            if nama: names.append(nama.strip())
-        return sorted(names)
-    except Exception as e:
-        print("Gagal ambil data parfum:", e)
-        return []
+def ambil_data_parfum(retry=2) -> list:
+    for _ in range(max(1, retry)):
+        try:
+            raw = requests.get(NAMA_PARFUM_SHEET_URL, timeout=10).text
+            data = json.loads(raw[47:-2])  # potong wrapper gviz
+            names = []
+            for row in data["table"]["rows"]:
+                nama = row["c"][0]["v"] if row["c"][0] else ""
+                if nama: names.append(nama.strip())
+            names = sorted(set(names))
+            if names:
+                print(f"✅ Parfum loaded: {len(names)}")
+                return names
+        except Exception as e:
+            print("⚠️ ambil_data_parfum error:", e)
+    print("❌ Gagal load dari sheet, gunakan fallback.")
+    return []
 
 def cari_parfum(keyword: str, daftar: list) -> list:
-    kw = (keyword or "").lower().strip()
-    if not kw: return daftar
+    kw = (keyword or "").strip().lower()
+    if not kw: return []
     return [x for x in daftar if kw in x.lower()]
 
 def parfum_page_markup(parfum_list: list, page: int, per_page: int = 6):
     total = len(parfum_list)
-    max_page = max(1, ceil(total / per_page))
+    max_page = max(1, ceil(total / per_page)) if total else 1
     page = max(1, min(page, max_page))
     start, end = (page - 1) * per_page, (page - 1) * per_page + per_page
     items = parfum_list[start:end]
@@ -116,11 +122,12 @@ def parfum_page_markup(parfum_list: list, page: int, per_page: int = 6):
 async def set_commands(app):
     cmds = [
         BotCommand("start", "Mulai bot & tampilkan menu utama"),
-        BotCommand("penjualan", "Catat penjualan"),
-        BotCommand("pembelian", "Catat pembelian/stok"),
-        BotCommand("cari", "Cari nama parfum"),
+        BotCommand("penjualan", "Kirim format input cepat penjualan"),
+        BotCommand("pembelian", "Kirim format input cepat pembelian"),
+        BotCommand("cari", "Cari nama parfum (prompt)"),
         BotCommand("formpenjualan", "Input cepat penjualan (blok teks)"),
         BotCommand("formpembelian", "Input cepat pembelian (blok teks)"),
+        BotCommand("reload", "Muat ulang daftar parfum"),
         BotCommand("batal", "Batalkan proses"),
         BotCommand("bantuan", "Bantuan & panduan"),
     ]
@@ -144,42 +151,78 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return CHOOSING
 
 
+# =============== HELPER KIRIM TEMPLATE ===============
+async def kirim_template_pembelian(send_target, cid):
+    template = (
+        "📦 *Format input pembelian*\n"
+        "Silakan salin & isi sebagai *1 pesan*:\n\n"
+        "nama:\n"
+        "no_hp:\n"
+        "alamat:\n"
+        "kategori:\n"
+        "nama_barang:\n"
+        "varian:\n"
+        "qty:\n"
+        "harga_total:\n"
+        "link:\n\n"
+        "📝 *Note*: *kategori* tulis salah satu: *Bibit / Botol / Campuran*.\n"
+        "- Jika *Bibit*: `nama_barang` = *nama parfum* (pakai inline `@Bot keyword`).\n"
+        "- Jika *Botol*: `nama_barang` = *ukuran* (15ml, 25ml, ...).\n"
+        "- Jika *Campuran*: `varian` = *jenis* (Absolute, Alkohol, ...)."
+    )
+    await send_target.reply_text(template, parse_mode="Markdown")
+    user_data[cid] = {"mode": "Pembelian", "step": "fast_wait_block"}
+    return FAST_PEMBELIAN
+
+async def kirim_template_penjualan(send_target, cid):
+    template = (
+        "🛍 *Format input penjualan*\n"
+        "Silakan salin & isi sebagai *1 pesan*:\n\n"
+        "nama:\n"
+        "no_hp:\n"
+        "alamat:\n"
+        "nama_parfum:\n"
+        "varian:\n"
+        "qty:\n"
+        "harga_satuan:\n\n"
+        "📝 *Note*: *tanggal* otomatis, *harga_total* = qty × harga_satuan."
+    )
+    await send_target.reply_text(template, parse_mode="Markdown")
+    user_data[cid] = {"mode": "Penjualan", "step": "fast_wait_block"}
+    return FAST_PENJUALAN
+
+
 # =============== COMMANDS (menu) ===============
 async def penjualan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cid = update.effective_chat.id
     if not is_authorized(cid):
         await update.message.reply_text("❌ Anda tidak diizinkan.")
         return ConversationHandler.END
-    user_data[cid] = {"mode": "Penjualan", "step": "nama"}
-    await update.message.reply_text("🛍 Mode Penjualan\n👤 Masukkan nama pembeli:")
-    return INPUT_DATA
+    return await kirim_template_penjualan(update.message, cid)
 
 async def pembelian_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cid = update.effective_chat.id
     if not is_authorized(cid):
         await update.message.reply_text("❌ Anda tidak diizinkan.")
         return ConversationHandler.END
-    user_data[cid] = {"mode": "Pembelian", "step": "nama"}
-    await update.message.reply_text("📦 Mode Pembelian\n👤 Masukkan nama seller:")
-    return INPUT_DATA
+    return await kirim_template_pembelian(update.message, cid)
 
-async def cari_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    cid = update.effective_chat.id
-    if not is_authorized(cid):
-        await update.message.reply_text("❌ Anda tidak diizinkan.")
-        return ConversationHandler.END
-    await update.message.reply_text("🔍 Ketik keyword parfum untuk mencari:")
-    return PARFUM_SEARCH
+async def form_penjualan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await penjualan_cmd(update, context)
+
+async def form_pembelian_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await pembelian_cmd(update, context)
 
 async def bantuan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "📘 Bantuan:\n"
         "/start – Menu utama\n"
-        "/penjualan – Catat penjualan\n"
-        "/pembelian – Catat pembelian\n"
-        "/cari – Cari parfum\n"
-        "/formpenjualan – Input cepat penjualan (blok teks)\n"
-        "/formpembelian – Input cepat pembelian (blok teks)\n"
+        "/penjualan – Format cepat penjualan\n"
+        "/pembelian – Format cepat pembelian\n"
+        "/cari – Cari parfum (prompt)\n"
+        "/formpenjualan – Sama dengan /penjualan\n"
+        "/formpembelian – Sama dengan /pembelian\n"
+        "/reload – Muat ulang data parfum\n"
         "/batal – Batalkan proses"
     )
 
@@ -188,6 +231,15 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data.pop(cid, None)
     await update.message.reply_text("❌ Proses dibatalkan.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
+
+async def reload_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_authorized(update.effective_user.id):
+        return
+    daftar = ambil_data_parfum()
+    if not daftar:
+        daftar = ["Pink Chiffon","Avril Lavigne","1000 Bunga","Guess Pink"]
+    context.bot_data["parfum_list"] = daftar
+    await update.message.reply_text(f"🔄 Reload: {len(daftar)} parfum.")
 
 
 # =============== CALLBACK (tombol) ===============
@@ -199,249 +251,100 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("mode|"):
         mode = data.split("|", 1)[1]
-        user_data[cid] = {"mode": mode, "step": "nama"}
-        await q.edit_message_text(f"📝 Mode {mode}\n👤 Masukkan nama {'pembeli' if mode=='Penjualan' else 'seller'}:")
-        return INPUT_DATA
+        if mode == "Penjualan":
+            await q.edit_message_text("🛍 Mode Penjualan (input cepat).")
+            return await kirim_template_penjualan(q.message, cid)
+        else:
+            await q.edit_message_text("📦 Mode Pembelian (input cepat).")
+            return await kirim_template_pembelian(q.message, cid)
 
     if data.startswith("page|"):
         page = int(data.split("|", 1)[1])
         parfums = context.bot_data.get("parfum_list", [])
         await q.edit_message_text("🧴 Pilih nama parfum:", reply_markup=parfum_page_markup(parfums, page))
-        user_data[cid]["parfum_page"] = page
         return PARFUM_LIST
 
     if data.startswith("parfum|"):
         nama = data.split("|", 1)[1]
+        ud = user_data.get(cid, {})
+        # jika sedang validasi bibit dan menunggu pilihan
+        if "draft" in ud and ud.get("mode") == "Pembelian":
+            d = ud["draft"]; d["nama_barang"] = nama
+            # set ulang agar diterima ulang oleh fast_pembelian
+            user_data[cid] = {"mode": "Pembelian", "step": "fast_wait_block"}
+            class FakeMsg: 
+                text = "\n".join([f"{k}: {v}" for k,v in d.items()])
+            fake_update = Update(update.update_id, message=type("Msg", (), {"text": FakeMsg.text, "chat": q.message.chat}))
+            # panggil handler langsung
+            return await fast_pembelian_receive(fake_update, context)
+
+        # jalur biasa
         user_data[cid]["nama_barang"] = nama
-        user_data[cid]["step"] = "varian"
-        await q.edit_message_text(f"🧴 Parfum dipilih: {nama}\n📐 Masukkan/pilih varian:")
-        return INPUT_DATA
+        await q.edit_message_text(f"🧴 Parfum dipilih: {nama}")
+        return ConversationHandler.END
 
     if data == "search|parfum":
-        await q.edit_message_text("🔍 Ketik keyword parfum untuk mencari:")
+        await q.edit_message_text("🔍 Ketik keyword parfum (contoh: *pink* / *avril*):", parse_mode="Markdown")
         return PARFUM_SEARCH
 
-    # Konfirmasi simpan/cancel untuk flow biasa
-    if data == "save_data":
-        payload = user_data.get(cid, {}).get("payload_confirm")
+    # Konfirmasi fast mode / flow umum
+    if data in ("fast_save_penjualan", "fast_save_pembelian", "save_data"):
+        payload = user_data.get(cid, {}).get("fast_payload") or user_data.get(cid, {}).get("payload_confirm")
         if not payload:
             await q.edit_message_text("⚠️ Data tidak ditemukan.")
             return ConversationHandler.END
         try:
-            requests.post(SCRIPT_URL, data=payload)
-            await q.edit_message_text("✅ Data berhasil disimpan.")
-        except Exception as e:
-            await q.edit_message_text(f"❌ Gagal menyimpan: {e}")
-        user_data.pop(cid, None)
-        return ConversationHandler.END
-    if data == "cancel_data":
-        user_data.pop(cid, None)
-        await q.edit_message_text("❌ Dibatalkan.")
-        return ConversationHandler.END
-
-    # Fast mode callbacks (penjualan/pembelian)
-    if data == "fast_cancel":
-        user_data.pop(cid, None)
-        await q.edit_message_text("❌ Dibatalkan.")
-        return ConversationHandler.END
-    if data in ("fast_save_penjualan", "fast_save_pembelian"):
-        payload = user_data.get(cid, {}).get("fast_payload")
-        if not payload:
-            await q.edit_message_text("⚠️ Data tidak ditemukan.")
-            return ConversationHandler.END
-        try:
-            requests.post(SCRIPT_URL, data=payload)
+            requests.post(SCRIPT_URL, data=payload, timeout=10)
             await q.edit_message_text("✅ Data berhasil disimpan.")
         except Exception as e:
             await q.edit_message_text(f"❌ Gagal menyimpan: {e}")
         user_data.pop(cid, None)
         return ConversationHandler.END
 
-
-# =============== INPUT STEP-BY-STEP ===============
-async def input_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    cid = update.effective_chat.id
-    text = update.message.text
-    data = user_data.get(cid, {})
-    step = data.get("step")
-    mode = data.get("mode")
-
-    if step == "nama":
-        data["nama"] = text
-        data["tanggal"] = datetime.now().strftime("%d-%m-%Y %H:%M:%S")
-        data["step"] = "no_hp"
-        await update.message.reply_text("📞 Masukkan No. HP:")
-        return INPUT_DATA
-
-    if step == "no_hp":
-        data["no_hp"] = text
-        data["step"] = "alamat"
-        await update.message.reply_text("📍 Masukkan alamat:")
-        return INPUT_DATA
-
-    if step == "alamat":
-        data["alamat"] = text
-        if mode == "Pembelian":
-            data["step"] = "kategori"
-            kb = [[InlineKeyboardButton(k, callback_data=f"kategori|{k}")] for k in KATEGORI_PEMBELIAN]
-            await update.message.reply_text("📂 Pilih kategori:", reply_markup=InlineKeyboardMarkup(kb))
-            return INPUT_DATA
-        else:
-            # Penjualan → pilih parfum
-            parfums = context.bot_data.get("parfum_list", [])
-            data["step"] = "parfum"
-            await update.message.reply_text("🧴 Pilih nama parfum:", reply_markup=parfum_page_markup(parfums, 1))
-            return PARFUM_LIST
-
-    if step == "parfum":
-        # kalau user ketik manual
-        data["nama_barang"] = text
-        data["step"] = "varian"
-        await update.message.reply_text("📐 Masukkan varian:")
-        return INPUT_DATA
-
-    if step == "kategori":
-        kat = text.strip().capitalize()
-        if kat not in KATEGORI_PEMBELIAN:
-            await update.message.reply_text("❗ Pilih: Bibit / Botol / Campuran")
-            return INPUT_DATA
-        data["kategori"] = kat
-        if kat == "Bibit":
-            parfums = context.bot_data.get("parfum_list", [])
-            data["step"] = "parfum"
-            await update.message.reply_text("🧴 Pilih nama parfum:", reply_markup=parfum_page_markup(parfums, 1))
-            return PARFUM_LIST
-        elif kat == "Botol":
-            data["step"] = "varian"
-            kb = [[InlineKeyboardButton(x, callback_data=f"varian|{x}")] for x in VARIAN_BOTOL]
-            await update.message.reply_text("📐 Pilih ukuran botol:", reply_markup=InlineKeyboardMarkup(kb))
-            return INPUT_DATA
-        else:  # Campuran
-            data["step"] = "varian"
-            kb = [[InlineKeyboardButton(x, callback_data=f"varian|{x}")] for x in VARIAN_CAMPURAN]
-            await update.message.reply_text("⚗️ Pilih jenis campuran:", reply_markup=InlineKeyboardMarkup(kb))
-            return INPUT_DATA
-
-    if step == "varian":
-        data["varian"] = text
-        data["step"] = "qty"
-        await update.message.reply_text("🔢 Masukkan Qty:")
-        return INPUT_DATA
-
-    if step == "qty":
-        try:
-            data["qty"] = int(''.join(ch for ch in text if ch.isdigit()))
-        except:
-            await update.message.reply_text("❗ Qty harus angka.")
-            return INPUT_DATA
-        data["step"] = "harga"
-        if mode == "Penjualan":
-            await update.message.reply_text("💸 Masukkan *harga satuan* (contoh: 25000):", parse_mode="Markdown")
-        else:
-            await update.message.reply_text("💰 Masukkan *harga total* (contoh: 100000):", parse_mode="Markdown")
-        return INPUT_DATA
-
-    if step == "harga":
-        if mode == "Penjualan":
-            satuan_int = int(''.join(ch for ch in text if ch.isdigit())) if text else 0
-            total_int = satuan_int * int(data["qty"])
-            data["harga_satuan"] = _format_rp(satuan_int)
-            data["harga_total"] = _format_rp(total_int)
-            return await _konfirmasi_and_wait(update, context, data)
-        else:
-            total_int = int(''.join(ch for ch in text if ch.isdigit())) if text else 0
-            qty = int(data["qty"]) or 1
-            satuan_int = total_int // qty
-            data["harga_total"] = _format_rp(total_int)
-            data["harga_satuan"] = _format_rp(satuan_int)
-            data["step"] = "link"
-            await update.message.reply_text("🔗 Masukkan link pembelian (opsional):")
-            return INPUT_DATA
-
-    if step == "link":
-        data["link"] = text
-        return await _konfirmasi_and_wait(update, context, data)
+    if data in ("fast_cancel", "cancel_data"):
+        user_data.pop(cid, None)
+        await q.edit_message_text("❌ Dibatalkan.")
+        return ConversationHandler.END
 
 
-async def _konfirmasi_and_wait(update: Update, context: ContextTypes.DEFAULT_TYPE, data: dict):
-    mode = data.get("mode")
-    text = (
-        "📝 Konfirmasi data:\n\n"
-        f"*mode: {mode}*\n"
-        f"tanggal: {data.get('tanggal')}\n"
-        f"nama: {data.get('nama')}\n"
-        f"no_hp: {data.get('no_hp')}\n"
-        f"alamat: {data.get('alamat')}\n"
-        + (f"kategori: {data.get('kategori')}\n" if mode == "Pembelian" else "")
-        + f"nama_barang: {data.get('nama_barang')}\n"
-        + f"varian: {data.get('varian')}\n"
-        + f"qty: {data.get('qty')}\n"
-        + f"harga_satuan: {data.get('harga_satuan')}\n"
-        + f"harga_total: {data.get('harga_total')}\n"
-        + (f"link: {data.get('link','')}\n" if mode == "Pembelian" else "")
-    )
-    payload = {
-        "mode": mode,
-        "tanggal": data.get("tanggal"),
-        "nama": data.get("nama"),
-        "no_hp": data.get("no_hp",""),
-        "alamat": data.get("alamat",""),
-        "kategori": data.get("kategori",""),
-        "nama_barang": data.get("nama_barang",""),
-        "varian": data.get("varian",""),
-        "qty": str(data.get("qty","")),
-        "harga_satuan": data.get("harga_satuan",""),
-        "harga_total": data.get("harga_total",""),
-        "link": data.get("link",""),
-    }
-    user_data[update.effective_chat.id]["payload_confirm"] = payload
-
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Simpan", callback_data="save_data"),
-                                InlineKeyboardButton("❌ Batal", callback_data="cancel_data")]])
-    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
-    return INPUT_DATA
-
-
-# =============== PENCARIAN (prompt) ===============
-async def parfum_search_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    kw = update.message.text
-    daftar = context.bot_data.get("parfum_list", [])
-    hasil = cari_parfum(kw, daftar)
-    if not hasil:
-        await update.message.reply_text("❌ Tidak ditemukan. Coba keyword lain.")
-        return PARFUM_SEARCH
-    rows = [[InlineKeyboardButton(n, callback_data=f"parfum|{n}")] for n in hasil[:12]]
-    rows.append([InlineKeyboardButton("🔁 Cari lagi", callback_data="search|parfum")])
-    await update.message.reply_text(f"🔍 Hasil: {kw}", reply_markup=InlineKeyboardMarkup(rows))
-    return PARFUM_LIST
-
-
-# =============== FAST MODE: PENJUALAN (blok teks) ===============
-async def form_penjualan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# =============== PENCARIAN (PROMPT) ===============
+async def cari_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cid = update.effective_chat.id
     if not is_authorized(cid):
         await update.message.reply_text("❌ Anda tidak diizinkan.")
         return ConversationHandler.END
-    template = (
-        "🧾 *Input Cepat Penjualan*\n"
-        "Salin & isi, lalu kirim sebagai *1 pesan*:\n\n"
-        "nama: \n"
-        "no_hp: \n"
-        "alamat: \n"
-        "nama_parfum: \n"
-        "varian: \n"
-        "qty: \n"
-        "harga_satuan: \n\n"
-        "_Catatan_: *tanggal* otomatis, *harga_total* = qty × harga_satuan."
-    )
-    await update.message.reply_text(template, parse_mode="Markdown")
-    user_data[cid] = {"mode": "Penjualan", "step": "fast_wait_block"}
-    return FAST_PENJUALAN
 
+    if not context.bot_data.get("parfum_list"):
+        await update.message.reply_text("⚠️ Data parfum belum termuat. Coba /reload lalu ulangi /cari.")
+        return ConversationHandler.END
+
+    await update.message.reply_text("🔍 Ketik keyword parfum (mis: *pink* / *avril*):", parse_mode="Markdown")
+    return PARFUM_SEARCH
+
+async def parfum_search_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    kw = update.message.text
+    daftar = context.bot_data.get("parfum_list", [])
+    if not daftar:
+        await update.message.reply_text("⚠️ Data parfum belum termuat. Coba /reload.")
+        return ConversationHandler.END
+
+    hasil = cari_parfum(kw, daftar)
+    if not hasil:
+        await update.message.reply_text("❌ Tidak ditemukan. Coba keyword lain (cukup sebagian kata).")
+        return PARFUM_SEARCH
+
+    rows = [[InlineKeyboardButton(n, callback_data=f"parfum|{n}")] for n in hasil[:12]]
+    rows.append([InlineKeyboardButton("🔁 Cari lagi", callback_data="search|parfum")])
+    await update.message.reply_text(f"🔍 Hasil: *{kw}*", parse_mode="Markdown",
+                                    reply_markup=InlineKeyboardMarkup(rows))
+    return PARFUM_LIST
+
+
+# =============== FAST MODE: PENJUALAN (blok teks) ===============
 async def fast_penjualan_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cid = update.effective_chat.id
-    if user_data.get(cid, {}).get("step") != "fast_wait_block" or user_data[cid]["mode"] != "Penjualan":
-        await update.message.reply_text("❗ Gunakan /formpenjualan terlebih dahulu.")
+    if user_data.get(cid, {}).get("step") != "fast_wait_block" or user_data[cid].get("mode") != "Penjualan":
+        await update.message.reply_text("❗ Gunakan /penjualan terlebih dahulu.")
         return ConversationHandler.END
 
     d = _parse_block_to_dict(update.message.text)
@@ -495,49 +398,56 @@ async def fast_penjualan_receive(update: Update, context: ContextTypes.DEFAULT_T
 
 
 # =============== FAST MODE: PEMBELIAN (blok teks) ===============
-async def form_pembelian_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    cid = update.effective_chat.id
-    if not is_authorized(cid):
-        await update.message.reply_text("❌ Anda tidak diizinkan.")
-        return ConversationHandler.END
-
-    template = (
-        "🧾 *Input Cepat Pembelian*\n"
-        "Salin & isi, lalu kirim sebagai *1 pesan*:\n\n"
-        "nama: \n"
-        "no_hp: \n"
-        "alamat: \n"
-        "kategori: \n"
-        "nama_barang: \n"
-        "varian: \n"
-        "qty: \n"
-        "harga_total: \n"
-        "link: \n\n"
-        "_Catatan_: kategori tulis salah satu **Bibit / Botol / Campuran**.\n"
-        "- Jika *Bibit*: `nama_barang` = nama parfum (pakai inline search).\n"
-        "- Jika *Botol*: `nama_barang` = ukuran (15ml, 25ml, …).\n"
-        "- Jika *Campuran*: `varian` = jenis (Absolute, Alkohol, …).\n"
-        "Tanggal & *harga_satuan* dihitung otomatis."
-    )
-    await update.message.reply_text(template, parse_mode="Markdown")
-    user_data[cid] = {"mode": "Pembelian", "step": "fast_wait_block"}
-    return FAST_PEMBELIAN
-
 async def fast_pembelian_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cid = update.effective_chat.id
-    if user_data.get(cid, {}).get("step") != "fast_wait_block" or user_data[cid]["mode"] != "Pembelian":
-        await update.message.reply_text("❗ Gunakan /formpembelian terlebih dahulu.")
+    if user_data.get(cid, {}).get("step") != "fast_wait_block" or user_data[cid].get("mode") != "Pembelian":
+        await update.message.reply_text("❗ Gunakan /pembelian terlebih dahulu.")
         return ConversationHandler.END
 
     d = _parse_block_to_dict(update.message.text)
-    for_alias = {"nama_barang": d.get("nama_barang", d.get("nama_parfum",""))}
-    d.update(for_alias)
+    if "nama_barang" not in d and "nama_parfum" in d:
+        d["nama_barang"] = d["nama_parfum"]
 
     req = ["nama", "kategori", "qty", "harga_total"]
     miss = [x for x in req if not d.get(x)]
     if miss:
         await update.message.reply_text("⚠️ Field wajib belum lengkap: " + ", ".join(miss))
         return FAST_PEMBELIAN
+
+    kategori = (d.get("kategori") or "").strip().capitalize()
+    if kategori not in KATEGORI_PEMBELIAN:
+        await update.message.reply_text("❗ Kategori harus *Bibit / Botol / Campuran*.", parse_mode="Markdown")
+        return FAST_PEMBELIAN
+
+    # Validasi turunan kategori
+    if kategori == "Botol":
+        if (d.get("nama_barang") or "") not in VARIAN_BOTOL:
+            await update.message.reply_text(
+                "⚠️ Untuk *Botol*, `nama_barang` harus salah satu ukuran: " + ", ".join(VARIAN_BOTOL),
+                parse_mode="Markdown")
+            return FAST_PEMBELIAN
+    if kategori == "Campuran":
+        if (d.get("varian") or "") not in VARIAN_CAMPURAN:
+            await update.message.reply_text(
+                "⚠️ Untuk *Campuran*, `varian` harus salah satu: " + ", ".join(VARIAN_CAMPURAN),
+                parse_mode="Markdown")
+            return FAST_PEMBELIAN
+    if kategori == "Bibit":
+        daftar = context.bot_data.get("parfum_list", [])
+        if daftar and d.get("nama_barang"):
+            if not any(d["nama_barang"].lower() == x.lower() for x in daftar):
+                suggestions = [x for x in daftar if d["nama_barang"].lower() in x.lower()][:8]
+                if suggestions:
+                    rows = [[InlineKeyboardButton(x, callback_data=f"parfum|{x}")] for x in suggestions]
+                    await update.message.reply_text(
+                        "🔎 Nama parfum tidak persis ditemukan. Pilih salah satu:",
+                        reply_markup=InlineKeyboardMarkup(rows)
+                    )
+                    user_data[cid] = {"mode":"Pembelian","draft":d}
+                    return PARFUM_LIST
+                else:
+                    await update.message.reply_text("❌ Nama parfum tidak ditemukan di database. Coba keyword via /cari.")
+                    return FAST_PEMBELIAN
 
     try:
         qty = int(''.join(ch for ch in str(d["qty"]) if ch.isdigit()))
@@ -553,7 +463,7 @@ async def fast_pembelian_receive(update: Update, context: ContextTypes.DEFAULT_T
         "nama": d.get("nama",""),
         "no_hp": d.get("no_hp",""),
         "alamat": d.get("alamat",""),
-        "kategori": d.get("kategori",""),
+        "kategori": kategori,
         "nama_barang": d.get("nama_barang",""),
         "varian": d.get("varian",""),
         "qty": str(qty),
@@ -588,12 +498,13 @@ async def fast_pembelian_receive(update: Update, context: ContextTypes.DEFAULT_T
 async def handle_inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.inline_query
     user_id = q.from_user.id
-    # batasi akses
     if AUTHORIZED_IDS and user_id not in AUTHORIZED_IDS:
         await q.answer([], cache_time=1, is_personal=True,
                        switch_pm_text="Buka bot untuk akses", switch_pm_parameter="start")
         return
     daftar = context.bot_data.get("parfum_list", [])
+    if not daftar:
+        daftar = ["Pink Chiffon","Avril Lavigne","1000 Bunga","Guess Pink"]
     hasil = cari_parfum(q.query, daftar)[:50]
 
     results = []
@@ -612,38 +523,53 @@ async def handle_inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 # =============== MAIN ===============
 async def preload_parfum(app):
-    app.bot_data["parfum_list"] = ambil_data_parfum()
+    daftar = ambil_data_parfum()
+    if not daftar:
+        daftar = ["Pink Chiffon","Avril Lavigne","1000 Bunga","Guess Pink"]
+        print("⚠️ Pakai fallback parfum sementara.")
+    app.bot_data["parfum_list"] = daftar
     await set_commands(app)
 
 def main():
     app = ApplicationBuilder().token(TOKEN).post_init(preload_parfum).build()
 
+    # Commands yang aktif di semua state
+    always_cmds = [
+        CommandHandler("start", start),
+        CommandHandler("penjualan", penjualan_cmd),
+        CommandHandler("pembelian", pembelian_cmd),
+        CommandHandler("formpenjualan", form_penjualan_cmd),
+        CommandHandler("formpembelian", form_pembelian_cmd),
+        CommandHandler("cari", cari_cmd),
+        CommandHandler("reload", reload_cmd),
+        CommandHandler("bantuan", bantuan),
+        CommandHandler("batal", cancel),
+    ]
+
     conv = ConversationHandler(
-        entry_points=[
-            CommandHandler("start", start),
-            CommandHandler("penjualan", penjualan_cmd),
-            CommandHandler("pembelian", pembelian_cmd),
-            CommandHandler("cari", cari_cmd),
-            CommandHandler("formpenjualan", form_penjualan_cmd),
-            CommandHandler("formpembelian", form_pembelian_cmd),
-            CommandHandler("batal", cancel),
-            CommandHandler("bantuan", bantuan),
-        ],
+        entry_points=always_cmds,
         states={
-            CHOOSING: [CallbackQueryHandler(handle_callback)],
-            PARFUM_LIST: [CallbackQueryHandler(handle_callback)],
-            PARFUM_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, parfum_search_input)],
-            INPUT_DATA: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, input_data),
+            CHOOSING: [CallbackQueryHandler(handle_callback), *always_cmds],
+            PARFUM_LIST: [CallbackQueryHandler(handle_callback), *always_cmds],
+            PARFUM_SEARCH: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, parfum_search_input),
                 CallbackQueryHandler(handle_callback),
+                *always_cmds
+            ],
+            INPUT_DATA: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u,c: ConversationHandler.END),
+                CallbackQueryHandler(handle_callback),
+                *always_cmds
             ],
             FAST_PENJUALAN: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, fast_penjualan_receive),
                 CallbackQueryHandler(handle_callback, pattern="^fast_"),
+                *always_cmds
             ],
             FAST_PEMBELIAN: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, fast_pembelian_receive),
                 CallbackQueryHandler(handle_callback, pattern="^fast_"),
+                *always_cmds
             ],
         },
         fallbacks=[CommandHandler("batal", cancel)],
