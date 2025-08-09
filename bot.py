@@ -264,24 +264,69 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("🧴 Pilih nama parfum:", reply_markup=parfum_page_markup(parfums, page))
         return PARFUM_LIST
 
+    # ========= PATCH PENTING: pilih parfum tanpa fake update =========
     if data.startswith("parfum|"):
         nama = data.split("|", 1)[1]
         ud = user_data.get(cid, {})
-        # jika sedang validasi bibit dan menunggu pilihan
-        if "draft" in ud and ud.get("mode") == "Pembelian":
-            d = ud["draft"]; d["nama_barang"] = nama
-            # set ulang agar diterima ulang oleh fast_pembelian
-            user_data[cid] = {"mode": "Pembelian", "step": "fast_wait_block"}
-            class FakeMsg: 
-                text = "\n".join([f"{k}: {v}" for k,v in d.items()])
-            fake_update = Update(update.update_id, message=type("Msg", (), {"text": FakeMsg.text, "chat": q.message.chat}))
-            # panggil handler langsung
-            return await fast_pembelian_receive(fake_update, context)
 
-        # jalur biasa
+        # CASE 1: sedang menyelesaikan draft Pembelian (kategori Bibit)
+        if ud.get("mode") == "Pembelian" and "draft" in ud:
+            d = ud["draft"]
+            d["nama_barang"] = nama  # set parfum terpilih
+
+            kategori = (d.get("kategori") or "").strip().capitalize()
+            try:
+                qty = int(''.join(ch for ch in str(d.get("qty", "")) if ch.isdigit()))
+                total = int(''.join(ch for ch in str(d.get("harga_total", "")) if ch.isdigit()))
+            except:
+                await q.edit_message_text("❗ qty & harga_total harus angka. Kirim ulang blok.")
+                return FAST_PEMBELIAN
+
+            satuan = total // qty if qty else 0
+            payload = {
+                "mode": "Pembelian",
+                "tanggal": datetime.now().strftime("%d-%m-%Y"),
+                "nama": d.get("nama",""),
+                "no_hp": d.get("no_hp",""),
+                "alamat": d.get("alamat",""),
+                "kategori": kategori,
+                "nama_barang": d.get("nama_barang",""),
+                "varian": d.get("varian",""),
+                "qty": str(qty),
+                "harga_total": _format_rp(total),
+                "harga_satuan": _format_rp(satuan),
+                "link": d.get("link",""),
+            }
+            user_data[cid] = {"fast_payload": payload}
+
+            confirm_text = (
+                "Berikut data yang akan disimpan;\n\n"
+                "*mode: Pembelian*\n"
+                f"tanggal: {payload['tanggal']}\n"
+                f"nama: {payload['nama']}\n"
+                f"no_hp: {payload['no_hp']}\n"
+                f"alamat: {payload['alamat']}\n"
+                f"kategori: {payload['kategori']}\n"
+                f"nama_barang: {payload['nama_barang']}\n"
+                f"varian: {payload['varian']}\n"
+                f"qty: {payload['qty']}\n"
+                f"harga_total: {payload['harga_total']}\n"
+                f"harga_satuan: {payload['harga_satuan']}\n"
+                f"link: {payload['link']}\n"
+            )
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Lanjut simpan", callback_data="fast_save_pembelian"),
+                 InlineKeyboardButton("❌ Cancel", callback_data="fast_cancel")]
+            ])
+            await q.edit_message_text(f"🧴 Parfum dipilih: {nama}")
+            await q.message.reply_text(confirm_text, parse_mode="Markdown", reply_markup=kb)
+            return FAST_PEMBELIAN
+
+        # CASE 2: jalur biasa (mis. penjualan atau bukan draft)
         user_data[cid]["nama_barang"] = nama
         await q.edit_message_text(f"🧴 Parfum dipilih: {nama}")
         return ConversationHandler.END
+    # =================================================================
 
     if data == "search|parfum":
         await q.edit_message_text("🔍 Ketik keyword parfum (contoh: *pink* / *avril*):", parse_mode="Markdown")
